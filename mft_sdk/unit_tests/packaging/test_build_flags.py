@@ -361,9 +361,17 @@ class PackagingSuite(object):
         if not c.relocated:
             return self._record("no_default_paths", "SKIP",
                                 "variant installs to default paths")
-        defaults = _default_dirs(c.pkg)
-        bad = [p for p in (os.path.join(defaults["libdir"], "mstflint"),
-                           "/usr/include/mstflint", "/usr/share/mstflint")
+        d = _default_dirs(c.pkg)
+        # The SDK's OWN artifacts, never a shared directory. /usr/lib64/mstflint,
+        # /usr/include/mstflint and /usr/share/mstflint all belong to the main
+        # mstflint package, and even .../mstflint/sdk is shared -- the CLI rpm
+        # ships libresource_dump_sdk.so there -- so asserting any of those are
+        # absent fails on every correctly provisioned machine.
+        bad = [p for p in (os.path.join(d["libdir"], "mstflint", "sdk",
+                                        "libmstflint_sdk.so"),
+                           os.path.join(d["includedir"], "mstflint", "sdk", "mft_sdk"),
+                           os.path.join(d["datadir"], "mstflint", "sdk", "prm_dbs"),
+                           os.path.join(d["libdir"], "pkgconfig", "mstflint_sdk.pc"))
                if os.path.exists(p)]
         return self._record("no_default_paths", "PASS" if not bad else "FAIL",
                             ", ".join(bad))
