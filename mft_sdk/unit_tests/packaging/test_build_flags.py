@@ -282,13 +282,24 @@ class PackagingSuite(object):
         # installs nor erases. Deleting the parent took the CLI reference's
         # database with it and left mstreg/mstlink broken for every later
         # compare on that machine.
+        # ... and in the libdir, not even the SDK's own subdirectory: the main
+        # mstflint package ships libresource_dump_sdk.so inside
+        # <libdir>/mstflint/sdk, so rm -rf on that directory leaves the
+        # installed CLI package with a missing file -- `rpm -V mstflint`
+        # reports it -- until the next reinstall. Name the SDK's files instead.
         dirs = []
+        files = []
         for flavor_defaults in (_default_dirs("rpm"), _default_dirs("deb")):
-            dirs += [os.path.join(flavor_defaults["libdir"], "mstflint", "sdk")]
+            sdkdir = os.path.join(flavor_defaults["libdir"], "mstflint", "sdk")
+            files += [os.path.join(sdkdir, "libmstflint_sdk.so"),
+                      os.path.join(sdkdir, "libmft_sdk.so.1"),
+                      os.path.join(flavor_defaults["libdir"], "pkgconfig",
+                                   "mstflint_sdk.pc")]
         dirs += ["/usr/include/mstflint/sdk", "/usr/share/mstflint/sdk",
                  "/usr/include/mft_sdk", "/usr/share/mft_sdk", "/etc/mft_sdk",
                  c.dirs["prefix"] if c.relocated else None]
         dirs = [d for d in dirs if d and d != "/usr"]
+        _run("sudo rm -f " + " ".join(files))
         _run("sudo rm -rf " + " ".join(dirs))
         _ldconfig()
 
