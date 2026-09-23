@@ -89,8 +89,13 @@ EOF
 # the SDK spec expects.
 sdk_version() {
     local v
-    v="$(sed -nE 's/^AC_INIT\(mstflint,[[:space:]]*([0-9.]+).*/\1/p' "$SCRIPT_DIR/configure.ac" | head -1)"
-    echo "${v:-4.37.0}"
+    # Accept quoted and unquoted AC_INIT; never fall back to a hardcoded version.
+    v="$(sed -nE 's/^AC_INIT\(\[?mstflint\]?,[[:space:]]*\[?([0-9.]+)\]?.*/\1/p' "$SCRIPT_DIR/configure.ac" | head -1)"
+    if [[ -z "$v" ]]; then
+        echo "error: cannot parse the project version from $SCRIPT_DIR/configure.ac (AC_INIT)" >&2
+        return 1
+    fi
+    echo "$v"
 }
 
 # Build a standalone mstflint-sdk .rpm from a clean source tarball, in a private
@@ -106,7 +111,7 @@ build_rpm() {
     [[ -f "$spec" ]] || { echo "error: mstflint-sdk.spec(.in) not found" >&2; exit 1; }
 
     local version out top
-    version="$(sdk_version)"
+    version="$(sdk_version)" || exit 1
     out="${RPM_OUTPUT:-$SCRIPT_DIR}"; mkdir -p "$out"; out="$(cd "$out" && pwd)"
     top="$(mktemp -d)"
     mkdir -p "$top"/{SOURCES,SPECS,BUILD,BUILDROOT,RPMS,SRPMS,tmp}
@@ -179,7 +184,14 @@ build_deb() {
     # tarball's single top-level directory -- so resolve both before staging.
     local work src name ver upstream
     name="${DEB_NAME:-mstflint-sdk}"
-    ver="${DEB_VERSION:-$(sed -nE '1s/^[^ ]+ \(([^)]*)\).*/\1/p' "$SCRIPT_DIR/debian-sdk/changelog")}"
+    # Upstream from configure.ac; only the Debian revision from the changelog.
+    local deb_rev deb_clog
+    deb_clog="$(sed -nE '1s/^[^ ]+ \(([^)]*)\).*/\1/p' "$SCRIPT_DIR/debian-sdk/changelog")"
+    case "$deb_clog" in
+        *-*) deb_rev="${deb_clog##*-}" ;;
+        *)   deb_rev=1 ;;
+    esac
+    ver="${DEB_VERSION:-$(sdk_version || exit 1)-$deb_rev}"
     upstream="${ver%-*}"       # drop the Debian revision
     upstream="${upstream#*:}"  # and the epoch
     work="$(mktemp -d)"
@@ -216,9 +228,12 @@ build_deb() {
         sed -i "s#debian/mstflint-sdk#debian/$DEB_NAME#g" "$src/debian/rules"
     fi
 
-    if [[ -n "$DEB_VERSION" ]]; then
-        echo ">> setting .deb version to $DEB_VERSION"
-        sed -i "1s#([^)]*)#($DEB_VERSION)#" "$src/debian/changelog"
+    # Rewrite whenever the resolved version differs from the changelog, not just
+    # on an explicit --deb-version: dpkg-buildpackage takes the version from the
+    # changelog, so deriving $ver alone left the .deb stamped with the stale one.
+    if [[ "$ver" != "$deb_clog" ]]; then
+        echo ">> setting .deb version to $ver"
+        sed -i "1s#([^)]*)#($ver)#" "$src/debian/changelog"
     fi
 
     # Forward install-dir overrides into the isolated tree's debian/rules so a
