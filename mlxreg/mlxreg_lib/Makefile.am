@@ -50,9 +50,14 @@ libmstreg_lib_la_SOURCES = \
     mlxreg_parser.cpp \
     mlxreg_parser.h
 
+# mtcr_ul is referenced as a raw archive (not its .la): libmtcr_ul.la is an
+# installed libtool lib, and carrying it in dependency_libs makes libtool
+# relink libmstflint_sdk.la at install time with -lmtcr_ul from the final
+# libdir — which fails on a clean machine / rpmbuild DESTDIR (same rationale
+# as MTCR_SDK_WHOLE_ARCHIVE in configure.ac).
 libmstreg_lib_la_DEPENDENCIES = \
     $(top_builddir)/mft_utils/libmftutils.la \
-    $(top_builddir)/${MTCR_CONF_DIR}/libmtcr_ul.la \
+    $(top_builddir)/${MTCR_CONF_DIR}/.libs/libmtcr_ul.a \
     $(top_builddir)/adb_parser/libadb_parser.la \
     $(top_builddir)/dev_mgt/libdev_mgt.la
 
