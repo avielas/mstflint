@@ -69,7 +69,24 @@ TEST_F(MftSdkFecHistogramTest, GetFecHistogram)
     MST_QUERY_INIT(&fecHistogram);
     MstTelemetryContext context = makeTelemetryContext();
     status = mstGetFecHistogram(mstDevice, &context, &fecHistogram);
-    ASSERT_EQ(status, MST_SUCCESS) << "Failed to get FEC histogram: " << mstGetLastErrorString(mstDevice);
+
+    // A FEC histogram only exists while the link is up. mstlink says so in as
+    // many words ("FEC Histogram is valid with active link operation only") and
+    // the SDK returns the same refusal with the same text, which is the correct
+    // behaviour — so assert THAT, instead of demanding a histogram from a port
+    // that has none and calling the correct answer a failure.
+    if (status != MST_SUCCESS)
+    {
+        const std::string error = mstGetLastErrorString(mstDevice);
+        // Same contract as cable_ddm above: utils.py _GTEST_ERROR_RE parses
+        // this exact "Failed to get ...: <reason>" shape for the C++ column.
+        printf("\nFailed to get FEC histogram: %s\n", error.c_str());
+        EXPECT_EQ(status, MST_ERROR_FAILED_TO_GET_TELEMETRY)
+          << "an unavailable histogram must report MST_ERROR_FAILED_TO_GET_TELEMETRY, got " << status;
+        EXPECT_NE(error.find("active link operation only"), std::string::npos)
+          << "the SDK must explain WHY the histogram is unavailable, the way mstlink does; got: " << error;
+        return;
+    }
 
     // Print in mlxlink-compatible format for comparison BEFORE assertions,
     // so the comparison script can parse whatever data is available.

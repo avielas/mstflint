@@ -76,6 +76,7 @@ TEST_F(MftSdkTelemetryTest, GetTelemetryOperationalInfo)
     std::vector<std::pair<std::string, std::string>> results;
     results.reserve(NUM_OP_INFO_FIELDS);
 
+    std::string stateValue;
     for (size_t i = 0; i < NUM_OP_INFO_FIELDS; i++)
     {
         const char* valueStr;
@@ -89,6 +90,10 @@ TEST_F(MftSdkTelemetryTest, GetTelemetryOperationalInfo)
         {
             valueStr = NA_FIELD_VALUE;
         }
+        if (bit == TELEMETRY_OP_INFO_STATE)
+        {
+            stateValue = valueStr;
+        }
         results.emplace_back(fields[i].displayName, valueStr);
     }
 
@@ -99,11 +104,29 @@ TEST_F(MftSdkTelemetryTest, GetTelemetryOperationalInfo)
         printf("%-35s: %s\n", result.first.c_str(), result.second.c_str());
     }
 
-    EXPECT_EQ(operationalInfo.header.valid_fields_mask,
-              (1ULL << TELEMETRY_OP_INFO_STATE) | (1ULL << TELEMETRY_OP_INFO_PHYSICAL_STATE) |
-                (1ULL << TELEMETRY_OP_INFO_SPEED) | (1ULL << TELEMETRY_OP_INFO_WIDTH) |
-                (1ULL << TELEMETRY_OP_INFO_FEC) | (1ULL << TELEMETRY_OP_INFO_LOOPBACK_MODE) |
-                (1ULL << TELEMETRY_OP_INFO_AUTO_NEGOTIATION));
+    // How many of the seven fields are reported depends on the LINK, not on the
+    // SDK: with the port down mstlink prints State and Auto Negotiation and N/A
+    // for the rest, and the SDK sets exactly the matching bits. Demanding all
+    // seven unconditionally failed on every machine without a trained link,
+    // while the SDK was agreeing with the CLI field for field. Only the Active
+    // case can require the full mask.
+    uint64_t definedBits = 0;
+    for (size_t i = 0; i < NUM_OP_INFO_FIELDS; i++)
+    {
+        definedBits |= 1ULL << fields[i].capabilityBit;
+    }
+    const uint64_t mask = operationalInfo.header.valid_fields_mask;
+
+    EXPECT_EQ(mask & ~definedBits, 0ULL) << "valid_fields_mask sets a bit outside the defined fields";
+    if (stateValue == "Active")
+    {
+        EXPECT_EQ(mask, definedBits) << "on an Active link all operational-info fields must be reported";
+    }
+    else
+    {
+        printf("\n[ INFO ] link state '%s' is not Active: mask 0x%llx\n", stateValue.c_str(),
+               (unsigned long long)mask);
+    }
 }
 
 TEST_F(MftSdkTelemetryTest, ExtendedFecModesHaveNames)
@@ -153,9 +176,26 @@ TEST_F(MftSdkTelemetryTest, DefaultPortAfterSpecificPortDoesNotThrow)
     ASSERT_EQ(status, MST_SUCCESS) << "Failed to bind port 1: " << mstGetLastErrorString(mstDevice);
 
     // 2) Switch back to the device default; must not throw "Invalid port number!".
+    //
+    // KNOWN SDK DEFECT, not a test bug — do not "fix" this by relaxing the
+    // assertion. MftSdk::initMlxLinkSdk() re-binds the port whenever it differs
+    // from the last one, and the device default is the empty label, which
+    // MlxlinkCommander::handlePortStr() rejects outright ("Argument:  is
+    // invalid."). So the first request with an explicit port makes the handle
+    // permanently unable to serve a NULL context, and the damage is not
+    // confined to op-info: mstGetCountersInfo() and mstGetModuleInfo() on the
+    // same handle inherit the same failure. A fresh handle works, which is what
+    // identifies it as retained state rather than a device limitation.
+    //
+    // Reproducible outside gtest: NULL context on a new handle returns 0; after
+    // one call with label_port="1" the same handle returns 12; a new handle
+    // returns 0 again.
     MST_QUERY_INIT(&operationalInfo);
     status = mstGetTelemetryOperationalInfo(mstDevice, nullptr, &operationalInfo);
-    EXPECT_EQ(status, MST_SUCCESS) << "Default port after a specific port failed: " << mstGetLastErrorString(mstDevice);
+    EXPECT_EQ(status, MST_SUCCESS) << "Default port after a specific port failed: " << mstGetLastErrorString(mstDevice)
+                                   << " -- this is the known telemetry port-state defect in the SDK "
+                                      "(initMlxLinkSdk passes the empty default label to handlePortStr), "
+                                      "not a problem with this test.";
 }
 
 #ifndef MFT_SDK_SO_UNIFIED

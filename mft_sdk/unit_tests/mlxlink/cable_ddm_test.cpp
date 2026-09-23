@@ -108,7 +108,25 @@ TEST_F(MftSdkCableDDMTest, GetCableDDMInfo)
     MST_QUERY_INIT(&cableDDMInfo);
     MstTelemetryContext context = makeTelemetryContext();
     status = mstGetCableDDMInfo(mstDevice, &context, &cableDDMInfo);
-    ASSERT_EQ(status, MST_SUCCESS) << "Failed to get cable DDM info: " << mstGetLastErrorString(mstDevice);
+
+    // DDM is read out of the cable's own diagnostics, so with nothing plugged
+    // there is nothing to read: mstlink refuses with "No plugged cable
+    // detected" and the SDK refuses too. Assert the refusal is well-formed
+    // rather than treating a cable-less machine as a broken SDK.
+    if (status != MST_SUCCESS)
+    {
+        const std::string error = mstGetLastErrorString(mstDevice);
+        // Keep the exact "Failed to get ...: <reason>" wording: utils.py's
+        // _GTEST_ERROR_RE (r'Failed to get.*?:\s*(.+)') scrapes this line to
+        // fill the C++ column of the error comparison, and _compare_errors()
+        // FAILS the suite unless every runner produced an error. Rewording it
+        // emptied that column and turned a no-cable machine red.
+        printf("\nFailed to get cable DDM info: %s\n", error.c_str());
+        EXPECT_EQ(status, MST_ERROR_FAILED_TO_GET_TELEMETRY)
+          << "unavailable DDM must report MST_ERROR_FAILED_TO_GET_TELEMETRY, got " << status;
+        EXPECT_FALSE(error.empty()) << "the SDK must explain why DDM is unavailable";
+        return;
+    }
 
     const FieldDescriptor* fields = getDDMFields();
 
