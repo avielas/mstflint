@@ -293,6 +293,21 @@ def _get_pci_devices_lspci():
         return []
 
 
+def mst_tool_available():
+    """True when MFT's `mst` service tool is on PATH.
+
+    `mst` ships with MFT, not with mstflint. The mstflint SDK reaches devices
+    over pciconf/VSEC and needs no /dev/mst node, so requiring MFT here would
+    make an mstflint-only machine untestable -- and installing MFT alongside
+    is exactly the cross-product coupling this tree is meant to avoid.
+    Discovery falls back to lspci when this returns False.
+    """
+    for p in ("/usr/bin/mst", "/usr/sbin/mst", "/bin/mst", "/sbin/mst"):
+        if os.path.exists(p):
+            return True
+    return False
+
+
 # =============================================================================
 # Project Root
 # =============================================================================
@@ -524,9 +539,12 @@ class DeviceInfo(object):
 def get_pci_devices():
     """Get list of DeviceInfo objects.
 
-    In SDK-only mode uses lspci; otherwise uses ``mst status -v``.
+    Uses ``mst status -v`` when MFT's `mst` is installed (it also reports the
+    RDMA/NET interface names, which the operational-state advisory reads);
+    otherwise -- SDK-only mode, or an mstflint-only machine with no MFT --
+    falls back to lspci.
     """
-    if BaseConfig.SDK_ONLY:
+    if BaseConfig.SDK_ONLY or not mst_tool_available():
         return _get_pci_devices_lspci()
     try:
         output = subprocess.check_output(
@@ -642,8 +660,17 @@ class MstManager(object):
 
     @staticmethod
     def start():
-        """Start MST. Skipped in SDK-only mode. Raises RuntimeError on failure."""
+        """Start MST. Raises RuntimeError on failure.
+
+        Skipped in SDK-only mode, and skipped when `mst` is not installed:
+        that tool belongs to MFT, and the mstflint SDK does not need the
+        /dev/mst node it creates (it drives the device over pciconf/VSEC).
+        """
         if BaseConfig.SDK_ONLY:
+            return
+        if not mst_tool_available():
+            print("\n[MST] `mst` not installed (no MFT) - skipping, "
+                  "devices come from lspci")
             return
         print("\n[MST] Starting MST...")
         success, output = CommandRunner.run("sudo mst start", "Starting MST")
