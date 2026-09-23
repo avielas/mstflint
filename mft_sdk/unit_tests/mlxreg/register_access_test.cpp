@@ -173,14 +173,21 @@ TEST_F(MftSdkRegisterAccessTest, RegisterGetIndexed_PTYS)
     status = mstSetPRMRegisterField(mstDevice, &regMap, "local_port", 0x1);
     ASSERT_EQ(status, MST_SUCCESS) << mstGetLastErrorString(mstDevice);
 
-    status = mstSetPRMRegisterField(mstDevice, &regMap, "proto_mask", 0x7);
+    // proto_mask selects WHICH protocol's fields PTYS returns, so it is a
+    // one-hot selector, not a filter mask: 0x1 IB, 0x2 (reserved/EXT), 0x4
+    // Ethernet. Asking for 0x7 asks the firmware for three protocols at once
+    // and it refuses with syndrome 0x7CD836 — reproducible straight from the
+    // CLI (`mstreg --reg_name PTYS --indexes "local_port=0x1,proto_mask=0x7"`)
+    // with the SDK nowhere in the picture, which is what makes this a bug in
+    // the test and not in the register-access path it was meant to exercise.
+    status = mstSetPRMRegisterField(mstDevice, &regMap, "proto_mask", 0x1);
     ASSERT_EQ(status, MST_SUCCESS) << mstGetLastErrorString(mstDevice);
 
     status = mstSendPRMRegister(mstDevice, &regMap, MST_PRM_GET);
     ASSERT_EQ(status, MST_SUCCESS) << "Failed to send PTYS GET: " << mstGetLastErrorString(mstDevice);
 
     printf("\n%s: %s\n", SECTION_REGISTER_GET_INDEXED, regMap.name);
-    printf("%s: local_port=1, proto_mask=0x7\n", FIELD_INDEXES);
+    printf("%s: local_port=1, proto_mask=0x1\n", FIELD_INDEXES);
     printf("----------------------------------\n");
     printRegisterGetFields(regMap);
 
