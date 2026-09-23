@@ -54,6 +54,37 @@
 
 // EnvVarGuard comes from test_utils.h (shared by all unified/so test TUs).
 
+// The vendored googletest (release-1.8.1) predates GTEST_SKIP(), so express a
+// named skip through it when it exists and fall back to the "[  SKIPPED ]"
+// line the rest of this harness prints otherwise. Either way a skipped case
+// stays visible in the output and always carries its reason.
+#ifdef GTEST_SKIP
+#define MFT_SDK_SKIP_WITH_REASON(reason) GTEST_SKIP() << (reason)
+#else
+#define MFT_SDK_SKIP_WITH_REASON(reason)                             \
+    do                                                               \
+    {                                                                \
+        std::cout << "[  SKIPPED ] " << (reason) << std::endl;       \
+        return;                                                      \
+    } while (0)
+#endif
+
+#ifndef MFT_SDK_HAS_I2C
+// mstGetDeviceHandleWithI2cSecondary (mft_sdk_discovery.h) and
+// mstGet/SetI2cSecondary (mft_sdk_i2c_access.h) are declared unconditionally by
+// the public headers, but they are only compiled into libmstflint_sdk.so when
+// the SDK is configured with --enable-i2c -- which the packaged SDK is not, so
+// the symbols are absent and any reference to them is an undefined symbol at
+// link time. The calls are therefore removed at COMPILE time, not filtered out
+// at run time, and the tests that need them report this reason instead.
+// Build with -DMFT_SDK_HAS_I2C against an i2c-enabled SDK to run them for real.
+static const char* const kNoI2cSkipReason =
+  "SDK built without --enable-i2c: mstGetDeviceHandleWithI2cSecondary, "
+  "mstGetI2cSecondary and mstSetI2cSecondary are absent from "
+  "libmstflint_sdk.so (rebuild the SDK with i2c and compile this test with "
+  "-DMFT_SDK_HAS_I2C)";
+#endif
+
 // Mirrors isKernelModuleLoaded() in mft_sdk_discovery.cpp: the SDK decides
 // driver-backed sub-interface availability by scanning /proc/modules.
 static bool isKernelModuleLoaded(const std::string& moduleName)
@@ -271,21 +302,33 @@ TEST_F(MftSdkDiscoveryNoDeviceTest, GetDeviceHandleByBdfBAR0UserLevelNonexistent
 
 TEST_F(MftSdkDiscoveryNoDeviceTest, GetDeviceHandleWithI2cNullDevice)
 {
+#ifdef MFT_SDK_HAS_I2C
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(NULL, "some_device", 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP_WITH_REASON(kNoI2cSkipReason);
+#endif
 }
 
 TEST_F(MftSdkDiscoveryNoDeviceTest, GetDeviceHandleWithI2cNullId)
 {
+#ifdef MFT_SDK_HAS_I2C
     MstDevice dev = nullptr;
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(&dev, NULL, 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP_WITH_REASON(kNoI2cSkipReason);
+#endif
 }
 
 TEST_F(MftSdkDiscoveryNoDeviceTest, GetDeviceHandleWithI2cBothNull)
 {
+#ifdef MFT_SDK_HAS_I2C
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(NULL, NULL, 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP_WITH_REASON(kNoI2cSkipReason);
+#endif
 }
 
 TEST_F(MftSdkDiscoveryNoDeviceTest, GetPcieSubinterfacesNonPcieInterface)
@@ -299,17 +342,29 @@ TEST_F(MftSdkDiscoveryNoDeviceTest, GetPcieSubinterfacesNonPcieInterface)
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
 }
 
+// mstGetAvailablePCIeSubinterfaces switches on productType and only knows how
+// to enumerate sub-interfaces for NIC, Switch and GPU; every other
+// MstProductType falls into the default arm and is rejected with
+// MST_ERROR_NOT_SUPPORTED. This test used to name a 'CPU' product type, which
+// the shipped SDK's MstProductType (NIC, Switch, GPU, Retimer,
+// UnknownProductType) does not define -- Retimer and UnknownProductType are
+// the enumerators that exercise exactly the same branch, so both are checked.
 TEST_F(MftSdkDiscoveryNoDeviceTest, GetPcieSubinterfacesUnsupportedProduct)
 {
-    MstDeviceInfo info;
-    memset(&info, 0, sizeof(info));
-    info.interfaceType = PCIe;
-    info.productType = CPU;
-    strncpy(info.deviceIdentifier, "0000:ff:1f.7", MAX_DEVICE_IDENTIFIER_LENGTH - 1);
-    MstPcieSubInterfaceInfo* subs = nullptr;
-    unsigned int numSubs = 0;
-    MstStatus status = mstGetAvailablePCIeSubinterfaces(&info, &subs, &numSubs);
-    EXPECT_EQ(status, MST_ERROR_NOT_SUPPORTED);
+    const MstProductType unsupportedProducts[] = {Retimer, UnknownProductType};
+    for (auto productType : unsupportedProducts)
+    {
+        MstDeviceInfo info;
+        memset(&info, 0, sizeof(info));
+        info.interfaceType = PCIe;
+        info.productType = productType;
+        strncpy(info.deviceIdentifier, "0000:ff:1f.7", MAX_DEVICE_IDENTIFIER_LENGTH - 1);
+        MstPcieSubInterfaceInfo* subs = nullptr;
+        unsigned int numSubs = 0;
+        MstStatus status = mstGetAvailablePCIeSubinterfaces(&info, &subs, &numSubs);
+        EXPECT_EQ(status, MST_ERROR_NOT_SUPPORTED)
+          << "productType=" << static_cast<int>(productType) << " should have no PCIe sub-interfaces";
+    }
 }
 
 // GPU branch of mstGetAvailablePCIeSubinterfaces: an optional NVML-resolved
@@ -395,9 +450,15 @@ TEST_F(MftSdkDiscoveryNoDeviceTest, GetPcieSubinterfacesSwitchProduct)
     }
 }
 
-TEST_F(MftSdkDiscoveryNoDeviceTest, DiscoverRedfishNoDevices)
+// An interface type the SDK cannot enumerate maps to no legacy device flag
+// (translateInterfaceTypeToFlags default arm -> Mdevs(0)), so discovery finds
+// nothing and reports MST_ERROR_NO_AVAILABLE_DEVICES. This test used to name a
+// 'Redfish' interface type; the shipped MstInterfaceType (PCIe, Infiniband,
+// MTUSB, NDC, I2C, UnknownInterfaceType) has no such enumerator, and
+// UnknownInterfaceType is the one that exercises the very same branch.
+TEST_F(MftSdkDiscoveryNoDeviceTest, DiscoverUnsupportedInterfaceNoDevices)
 {
-    MstInterfaceType types[] = {Redfish};
+    MstInterfaceType types[] = {UnknownInterfaceType};
     MstDeviceInfo* devices = nullptr;
     unsigned int numDevices = 0;
     MstStatus status = mstDiscoverAvailableDevices(types, 1, &devices, &numDevices);
@@ -674,6 +735,9 @@ TEST_F(MftSdkDiscoveryDeviceTest, GetDeviceHandleOpenAndRelease)
 
 TEST_F(MftSdkDiscoveryDeviceTest, GetDeviceHandleWithI2cSecondary)
 {
+#ifndef MFT_SDK_HAS_I2C
+    MFT_SDK_SKIP_WITH_REASON(kNoI2cSkipReason);
+#else
     if (!hasDevice)
     {
         std::cout << "[  SKIPPED ] No device specified (-d flag)" << std::endl;
@@ -721,6 +785,7 @@ TEST_F(MftSdkDiscoveryDeviceTest, GetDeviceHandleWithI2cSecondary)
         mstSetI2cSecondary(dev, origAddr);
         mstReleaseDeviceHandle(dev);
     }
+#endif // MFT_SDK_HAS_I2C
 }
 
 TEST_F(MftSdkDiscoveryDeviceTest, DiscoverMultipleInterfaceTypes)

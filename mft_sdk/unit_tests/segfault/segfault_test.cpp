@@ -42,6 +42,11 @@
  * Group A tests do NOT require any Mellanox/NVIDIA hardware.
  * Group B tests need a real device — pass -d <BDF> to enable them.
  * Group C tests verify logic bugs (no crash, but incorrect behaviour).
+ *
+ * A handful of cases exercise the SDK's OPTIONAL i2c API and are gated at
+ * compile time on MFT_SDK_HAS_I2C — see the comment on that macro below.
+ * Everything else in this file is pure NULL/invalid-argument robustness and
+ * always builds and runs.
  */
 
 #include "mft_sdk/mft_sdk.h"
@@ -51,6 +56,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -118,6 +124,56 @@ static ForkResult run_in_fork(Fn fn)
             EXPECT_EQ(_r.status, MST_ERROR_INVALID_ARGUMENT);                                               \
         }                                                                                                   \
     } while (0)
+
+// ============================================================================
+// Optional i2c API gate
+//
+// mstGetDeviceHandleWithI2cSecondary (mft_sdk_discovery.h) and
+// mstGetI2cSecondary / mstSetI2cSecondary (mft_sdk_i2c_access.h) are DECLARED
+// in the installed headers unconditionally, but they are only DEFINED in
+// libmstflint_sdk.so when the SDK was configured with --enable-i2c. The
+// packaged SDK is not, so a reference to any of them compiles cleanly and then
+// fails at LINK time with "undefined reference".
+//
+// The gate must therefore be compile-time. Excluding these cases at run time
+// with --gtest_filter does NOT help: the undefined references are still in the
+// object file, so the binary never links — and filtering silently hides the
+// fact that the SDK under test has no i2c API at all. That is exactly how this
+// gap went unnoticed before.
+//
+// Default is 0 (assume no i2c) so a stock build always links. The build system
+// should probe the .so and pass -DMFT_SDK_HAS_I2C=1 when the symbols are there:
+//
+//   nm -D --defined-only $(SDK_LIBDIR)/libmstflint_sdk.so | grep -qw mstGetI2cSecondary
+//
+// Verified on the packaged SDK: the only "i2c" symbols exported are the
+// low-level mtcr ones (mget/mset_i2c_secondary, mget/mset_i2c_addr_width);
+// none of the three mst* entry points above is present.
+// ============================================================================
+#ifndef MFT_SDK_HAS_I2C
+#define MFT_SDK_HAS_I2C 0
+#endif
+
+#define MFT_SDK_I2C_ABSENT_REASON                                                             \
+    "i2c API not available in this SDK build: mstGetDeviceHandleWithI2cSecondary, "           \
+    "mstGetI2cSecondary and mstSetI2cSecondary are declared in the headers but not defined "  \
+    "in libmstflint_sdk.so (SDK configured without --enable-i2c). Rebuild the SDK with "      \
+    "--enable-i2c and compile this suite with -DMFT_SDK_HAS_I2C=1 to run this case."
+
+// gtest 1.8.1 — the version this harness bundles — predates GTEST_SKIP().
+// Emulate it: print the same "[  SKIPPED ]" marker the rest of this file uses,
+// followed by the reason, then leave the test body. Under gtest >= 1.10 the
+// real macro is used and the framework reports the case as SKIPPED.
+#ifdef GTEST_SKIP
+#define MFT_SDK_SKIP(reason) GTEST_SKIP() << (reason)
+#else
+#define MFT_SDK_SKIP(reason)                                   \
+    do                                                         \
+    {                                                          \
+        std::cout << "[  SKIPPED ] " << (reason) << std::endl; \
+        return;                                                \
+    } while (0)
+#endif
 
 class MftSdkSegfaultTest : public ::testing::Test
 {
@@ -215,11 +271,15 @@ TEST_F(MftSdkSegfaultTest, DISABLED_GarbageDeviceReadCRSpace)
     EXPECT_NO_CRASH(mstReadCRSpace(kGarbageDevice, 0x0, data, sizeof(data)));
 }
 
-// A10. mstSetI2cSecondary — garbage device handle.
+// A10. mstSetI2cSecondary — garbage device handle. Needs the optional i2c API.
 //      Contract: return MST_ERROR_INVALID_ARGUMENT; today reading `_mfiles` through the wild MftSdk* crashes.
 TEST_F(MftSdkSegfaultTest, DISABLED_GarbageDeviceSetI2c)
 {
+#if MFT_SDK_HAS_I2C
     EXPECT_NO_CRASH(mstSetI2cSecondary(kGarbageDevice, 0x48));
+#else
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#endif
 }
 
 // ============================================================================
@@ -626,9 +686,8 @@ TEST_F(MftSdkSegfaultTest, NullDeviceToAllApis)
     EXPECT_EQ(mstReadCRSpace(nullDev, 0, crData, sizeof(crData)), MST_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(mstWriteCRSpace(nullDev, 0, crData, sizeof(crData)), MST_ERROR_INVALID_ARGUMENT);
 
-    EXPECT_EQ(mstSetI2cSecondary(nullDev, 0x48), MST_ERROR_INVALID_ARGUMENT);
-    uint8_t i2cAddr = 0;
-    EXPECT_EQ(mstGetI2cSecondary(nullDev, &i2cAddr), MST_ERROR_INVALID_ARGUMENT);
+    // The i2c half of this contract lives in NullDeviceToI2cApis below, so that
+    // an SDK without --enable-i2c only costs us that one case, not all of C4.
 
     char** capTypes = nullptr;
     unsigned int numCap = 0;
@@ -650,6 +709,22 @@ TEST_F(MftSdkSegfaultTest, NullDeviceToAllApis)
     uint32_t val32 = 0;
     EXPECT_EQ(mstGetCapabilityValue(nullDev, &capMap, "cap", &val32), MST_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(mstSetCapabilityValue(nullDev, &capMap, "cap", 0), MST_ERROR_INVALID_ARGUMENT);
+}
+
+// C4b. NULL mstDevice to the i2c APIs — should return error, not crash.
+//      Split out of C4 so that on an SDK built without --enable-i2c only this
+//      case is skipped while C4's other ~40 NULL-handle assertions still run.
+TEST_F(MftSdkSegfaultTest, NullDeviceToI2cApis)
+{
+#if MFT_SDK_HAS_I2C
+    MstDevice nullDev = NULL;
+
+    EXPECT_EQ(mstSetI2cSecondary(nullDev, 0x48), MST_ERROR_INVALID_ARGUMENT);
+    uint8_t i2cAddr = 0;
+    EXPECT_EQ(mstGetI2cSecondary(nullDev, &i2cAddr), MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#endif
 }
 
 // C5. Free functions with NULL — should safely return INVALID_ARGUMENT
@@ -686,26 +761,38 @@ TEST_F(MftSdkSegfaultTest, GetDeviceHandleNullIdentifier)
     EXPECT_EQ(mstGetDeviceHandle(&dev, NULL), MST_ERROR_INVALID_ARGUMENT);
 }
 
-// D2. mstGetDeviceHandleWithI2cSecondary — NULL mstDevice
+// D2. mstGetDeviceHandleWithI2cSecondary — NULL mstDevice. Needs the optional i2c API.
 TEST_F(MftSdkSegfaultTest, GetDeviceHandleWithI2cNullMstDevice)
 {
+#if MFT_SDK_HAS_I2C
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(NULL, "some_device", 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#endif
 }
 
-// D3. mstGetDeviceHandleWithI2cSecondary — NULL deviceIdentifier
+// D3. mstGetDeviceHandleWithI2cSecondary — NULL deviceIdentifier. Needs the optional i2c API.
 TEST_F(MftSdkSegfaultTest, GetDeviceHandleWithI2cNullId)
 {
+#if MFT_SDK_HAS_I2C
     MstDevice dev = nullptr;
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(&dev, NULL, 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#endif
 }
 
-// D4. mstGetDeviceHandleWithI2cSecondary — both NULL
+// D4. mstGetDeviceHandleWithI2cSecondary — both NULL. Needs the optional i2c API.
 TEST_F(MftSdkSegfaultTest, GetDeviceHandleWithI2cBothNull)
 {
+#if MFT_SDK_HAS_I2C
     MstStatus status = mstGetDeviceHandleWithI2cSecondary(NULL, NULL, 0x48);
     EXPECT_EQ(status, MST_ERROR_INVALID_ARGUMENT);
+#else
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#endif
 }
 
 // D5. Telemetry APIs with invalid header.size (too small)
@@ -786,9 +873,12 @@ TEST_F(MftSdkSegfaultTest, WriteCRSpaceNullData)
     mstReleaseDeviceHandle(dev);
 }
 
-// D7. mstGetI2cSecondary — NULL address pointer
+// D7. mstGetI2cSecondary — NULL address pointer. Needs the optional i2c API.
 TEST_F(MftSdkSegfaultTest, GetI2cSecondaryNullAddr)
 {
+#if !MFT_SDK_HAS_I2C
+    MFT_SDK_SKIP(MFT_SDK_I2C_ABSENT_REASON);
+#else
     if (g_devicePci.empty())
     {
         std::cout << "[  SKIPPED ] No device specified (-d flag)" << std::endl;
@@ -803,6 +893,7 @@ TEST_F(MftSdkSegfaultTest, GetI2cSecondaryNullAddr)
     }
     EXPECT_NO_CRASH(mstGetI2cSecondary(dev, NULL));
     mstReleaseDeviceHandle(dev);
+#endif
 }
 
 // D8. mstGetCapabilitiesByType — NULL metadata output pointer
