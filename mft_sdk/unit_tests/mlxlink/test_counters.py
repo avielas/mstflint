@@ -418,6 +418,10 @@ class ComparisonTable(object):
             print("Valid fields mask summary:  {} checked, {}".format(
                 mask_total, mask_status))
 
+        # Kept for callers that only care about "did anything differ", but the
+        # count matters too: zero compared fields is not agreement, it is the
+        # absence of evidence. See TestSuite.run_comparison().
+        self.compared_count = compared_count
         return diff_count == 0
 
 
@@ -499,12 +503,26 @@ class TestSuite(BaseTestSuite):
             mlxlink_fields = self.mlxlink_runner.get_counters()
 
         if c_fields or cpp_fields:
-            all_match = ComparisonTable(
+            table = ComparisonTable(
                 c_fields, cpp_fields, mlxlink_fields,
                 valid_fields_mask=valid_fields_mask,
                 device=self.device,
-                device_type=self.device_type).print_table()
-            return self.RESULT_PASS if all_match else self.RESULT_FAIL
+                device_type=self.device_type)
+            all_match = table.print_table()
+            if not all_match:
+                return self.RESULT_FAIL
+            # "0 compared, 0 match, 0 differ" reported PASS: every counter was
+            # masked out because the port has no trained link, so nothing was
+            # ever put side by side. Nothing compared is a SKIP -- the machine
+            # could not answer the question -- and calling it PASS is what makes
+            # a green column on a link-down machine indistinguishable from a
+            # green column on a machine that actually validated the SDK.
+            if getattr(table, "compared_count", 0) == 0:
+                print("\n{}No counters were comparable on this port (link down / no cable) -- "
+                      "nothing was validated, reporting SKIP rather than PASS.{}".format(
+                          YELLOW, RESET))
+                return self.RESULT_SKIP
+            return self.RESULT_PASS
 
         return self._compare_errors()
 
