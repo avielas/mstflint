@@ -89,6 +89,11 @@ from utils import (  # noqa: E402
 YELLOW = "\033[93m"
 
 DEFAULT_HARNESS = "/usr/lib64/mft_sdk/tests/mft_sdk_mstflint_so_test"
+# Sonames that count as "the SDK under test". Which one the harness
+# actually links depends on how it was produced: the MFT prebuilt binary
+# needs libmft_sdk.so.1, while a harness compiled locally against this
+# product needs libmstflint_sdk.so. The WRONGLIB gate below accepts either.
+SDK_SONAMES = ("libmstflint_sdk.so", "libmft_sdk.so")
 GTEST_EXCLUSIONS = "-*I2c*:*NullDeviceToAllApis*:*TelemetryJson*:*FreeJsonString*"
 
 # Every package identity this suite may install or must clean away. The wipe
@@ -404,14 +409,26 @@ class PackagingSuite(object):
         if not os.path.exists(self.harness):
             return self._record("harness_discovery", "SKIP",
                                 self.harness + " missing — run Build & Run")
-        # WRONGLIB gate first: the harness must resolve libmft_sdk.so.1 into
-        # the VARIANT libdir — otherwise we would be testing some other lib.
-        rc, out = _run("env LD_LIBRARY_PATH={} ldd {} 2>/dev/null | grep libmft_sdk.so.1"
+        # WRONGLIB gate first: whichever SDK library the harness links must
+        # resolve into the VARIANT libdir — otherwise we would be testing some
+        # other lib. Matching one hard-coded soname silently mis-fires: greping
+        # for libmft_sdk.so.1 against a locally compiled harness (which needs
+        # libmstflint_sdk.so) yields no lines at all, and the empty result then
+        # reports FAIL with an empty detail string rather than a real mismatch.
+        rc, out = _run("env LD_LIBRARY_PATH={} ldd {} 2>/dev/null"
                        .format(c.sdk_libdir, self.harness))
-        if c.sdk_libdir not in out:
+        sdk_lines = [l.strip() for l in out.splitlines()
+                     if any(n in l for n in SDK_SONAMES)]
+        if not sdk_lines:
             return self._record("harness_discovery", "FAIL",
-                                "libmft_sdk.so.1 resolves outside variant libdir: " +
-                                out.strip()[:100])
+                                "harness links no SDK library ({}): ldd said {}".format(
+                                    "/".join(SDK_SONAMES),
+                                    out.strip().replace("\n", " ")[:100] or "nothing"))
+        stray = [l for l in sdk_lines if c.sdk_libdir not in l]
+        if stray:
+            return self._record("harness_discovery", "FAIL",
+                                "SDK library resolves outside variant libdir {}: {}".format(
+                                    c.sdk_libdir, "; ".join(stray)[:120]))
         dev = " -d " + self.device if self.device else ""
         rc, out = _run('sudo env LD_LIBRARY_PATH={} {} --gtest_filter="MftSdkDiscovery*{}"{}'
                        .format(c.sdk_libdir, self.harness, GTEST_EXCLUSIONS, dev),
