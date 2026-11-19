@@ -65,10 +65,17 @@ public:
     ParseStatus HandleOption(string name, string value);
     void run(int agc, char** argv);
 
-private:
+protected:
     void initCmdParser();
     void printHelp();
-    void paramValidate();
+    static void printFlagLine(const char flag_s, string flag_l, string param, string desc);
+    virtual void paramValidate();
+    // Print nothing here; a derived UI can add options and examples to the help, and lines after --show_reg's fields.
+    virtual void printHelpExtra(bool /* examples */) {}
+    virtual void printRegFieldsExtra(const AttrsMap& /* regAttrs */) {}
+    // Creates run()'s register library; a derived UI can create a derived library.
+    virtual void newRegLib(_MlxRegLib_impl<true>*& lib, mfile* mf, PrmAdbType deviceType);
+    virtual void newRegLib(_MlxRegLib_impl<false>*& lib, mfile* mf, PrmAdbType deviceType);
     bool askUser(const char* question);
 
     // Helper class template for ADB-dependent operations

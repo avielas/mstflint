@@ -407,7 +407,7 @@ int32_t PrmRegSdk::initRegLib()
     }
     try
     {
-        _mlxRegLib = new mlxreg::MlxRegLib(_mf, externalAdbPathStr, _isExternal);
+        _mlxRegLib = newRegLib(_mf, externalAdbPathStr);
     }
     catch (exception& exc)
     {

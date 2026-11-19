@@ -48,4 +48,5 @@ libmlxreg_sdk_la_SOURCES = \
     mlxreg_sdk.cpp \
     mlxreg_sdk.h \
     prm_reg_sdk.cpp \
+    prm_reg_sdk_lib.cpp \
     prm_reg_sdk.h

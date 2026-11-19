@@ -89,6 +89,8 @@ protected:
     bool _isExternal;
 
 private:
+    // Defined in prm_reg_sdk_lib.cpp; another build can link its own definition that creates a derived library.
+    mlxreg::MlxRegLib* newRegLib(mfile* mf, const std::string& adbFile);
     // Helper functions
     static uint32_t strToUint32(const std::string& strInt, int& rc);
     static std::vector<std::string> strSplit(const std::string& str, const char delimiter, bool forcePairs, int& rc);

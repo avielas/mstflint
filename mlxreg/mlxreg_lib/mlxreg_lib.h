@@ -63,7 +63,7 @@ public:
                     string extAdbFile,
                     bool isExternal = true,
                     PrmAdbType deviceType = PrmAdbType::PRM_ADB_TYPE_UNKNOWN);
-    ~_MlxRegLib_impl(); // Dto'r
+    virtual ~_MlxRegLib_impl(); // Dto'r
     /* * * * * * * * * * * * * *
      * library Getters/Setters *
      * * * * * * * * * * * * * */
@@ -96,10 +96,16 @@ public:
 
 protected:
     /* Functions */
+    _MlxRegLib_impl() {} // a derived library calls init() in its constructor, so that its overrides run
+    void init(mfile* mf, string extAdbFile, bool isExternal, PrmAdbType deviceType);
     bool isRegSizeSupported(string regName);
     int sendMaccessReg(u_int16_t regId, int method, std::vector<u_int32_t>& data);
     int sendMaccessReg(u_int16_t regId, int method, void* data, uint32_t size);
-    void initAdb(string extAdbFile);
+    void initAdb(string extAdbFile, PrmAdbType deviceType);
+    // Extension points for a derived library; these are mstflint's behaviour.
+    virtual void loadEmbeddedAdb(PrmAdbType deviceType);
+    virtual int accessReg(u_int16_t regId, int method, void* data, uint32_t size, int* status);
+    virtual void onCmdBufferGenerated(u_int16_t /* regId */, std::vector<u_int32_t>& /* buffer */) {}
 
     /* Data Members */
     mfile* _mf;
@@ -107,7 +113,7 @@ protected:
     static const int RETRIES_COUNT;
     static const int SLEEP_INTERVAL;
     Adb* _adb{nullptr};
-    AdbInstance* _regAccessRootNode;
+    AdbInstance* _regAccessRootNode{nullptr};
     AdbInstance* _regAccessUnionNode;
     std::map<string, u_int64_t> _regAccessMap;
     AdbInstance* _currentNode{nullptr};

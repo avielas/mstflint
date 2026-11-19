@@ -59,6 +59,12 @@ const int _MlxRegLib_impl<dynamic>::SLEEP_INTERVAL = 100;
 template<bool dynamic>
 _MlxRegLib_impl<dynamic>::_MlxRegLib_impl(mfile* mf, string extAdbFile, bool isExternal, PrmAdbType deviceType)
 {
+    init(mf, extAdbFile, isExternal, deviceType);
+}
+
+template<bool dynamic>
+void _MlxRegLib_impl<dynamic>::init(mfile* mf, string extAdbFile, bool isExternal, PrmAdbType deviceType)
+{
     _mf = mf;
     _isExternal = isExternal;
     _currentNode = nullptr;
@@ -79,13 +85,14 @@ _MlxRegLib_impl<dynamic>::_MlxRegLib_impl(mfile* mf, string extAdbFile, bool isE
                 extAdbFile = PrmAdbDB::getDefaultDBName(deviceType);
             }
         }
-        initAdb(extAdbFile);
+        initAdb(extAdbFile, deviceType);
     }
     catch (MlxRegException& adbInitExp)
     {
         if (_adb)
         {
             delete _adb;
+            _adb = nullptr;
         }
         throw adbInitExp;
     }
@@ -177,7 +184,7 @@ bool _MlxRegLib_impl<dynamic>::isDeviceSupported(mfile* mf)
 }
 
 template<bool dynamic>
-void _MlxRegLib_impl<dynamic>::initAdb(string extAdbFile)
+void _MlxRegLib_impl<dynamic>::initAdb(string extAdbFile, PrmAdbType deviceType)
 {
     _adb = new Adb();
     if (extAdbFile != "")
@@ -189,8 +196,20 @@ void _MlxRegLib_impl<dynamic>::initAdb(string extAdbFile)
     }
     else
     {
-        throw MlxRegException("No Adabe was provided, please provide Adabe file to continue");
+        loadEmbeddedAdb(deviceType);
     }
+}
+
+template<bool dynamic>
+void _MlxRegLib_impl<dynamic>::loadEmbeddedAdb(PrmAdbType)
+{
+    throw MlxRegException("No Adabe was provided, please provide Adabe file to continue");
+}
+
+template<bool dynamic>
+int _MlxRegLib_impl<dynamic>::accessReg(u_int16_t regId, int method, void* data, uint32_t size, int* status)
+{
+    return maccess_reg(_mf, regId, (maccess_reg_method_t)method, (u_int32_t*)data, size, size, size, status);
 }
 
 /************************************
@@ -267,14 +286,7 @@ int _MlxRegLib_impl<dynamic>::sendMaccessReg(u_int16_t regId, int method, std::v
     int i = RETRIES_COUNT;
     do
     {
-        rc = maccess_reg(_mf,
-                         regId,
-                         (maccess_reg_method_t)method,
-                         (u_int32_t*)&data[0],
-                         (sizeof(u_int32_t) * data.size()),
-                         (sizeof(u_int32_t) * data.size()),
-                         (sizeof(u_int32_t) * data.size()),
-                         &status);
+        rc = accessReg(regId, method, &data[0], (sizeof(u_int32_t) * data.size()), &status);
         if ((rc != ME_ICMD_STATUS_IFC_BUSY && status != ME_REG_ACCESS_BAD_PARAM) || !(_mf->flags & MDEVS_REM))
         {
             break;
@@ -298,7 +310,7 @@ int _MlxRegLib_impl<dynamic>::sendMaccessReg(u_int16_t regId, int method, void* 
     int i = RETRIES_COUNT;
     do
     {
-        rc = maccess_reg(_mf, regId, (maccess_reg_method_t)method, (u_int32_t*)data, size, size, size, &status);
+        rc = accessReg(regId, method, data, size, &status);
         if ((rc != ME_ICMD_STATUS_IFC_BUSY && status != ME_REG_ACCESS_BAD_PARAM) || !(_mf->flags & MDEVS_REM))
         {
             break;
@@ -530,6 +542,7 @@ std::vector<u_int32_t>
     }
 
     delete[] buffer;
+    onCmdBufferGenerated(regId, interfaceBuffer);
     return interfaceBuffer;
 }
 
