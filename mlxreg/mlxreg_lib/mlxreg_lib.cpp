@@ -36,9 +36,6 @@
 #include <cstring>
 #include "mlxreg_lib.h"
 #include "cmdif/icmd_cif_open.h"
-#ifndef MST_UL
-#include <tools_layouts/adb_dbs.h>
-#endif
 #include <tools_layouts/prm_adb_db.h>
 #include <tools_layouts/icmd_hca_layouts.h>
 #include "common/tools_utils.h"
